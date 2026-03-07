@@ -13,6 +13,7 @@ CSV_FILE = 'multi_target_data.csv'
 
 # --- 1. SETUP DUAL-HEADER CSV ---
 if not os.path.exists(CSV_FILE):
+    print(f"[*] Creating new dataset file: {CSV_FILE}")
     # Notice we now have TWO label columns at the start
     landmarks = ['gesture_class', 'expression_class']
     for val in range(1, 543 + 1):
@@ -21,6 +22,12 @@ if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, mode='w', newline='') as f:
         csv_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
         csv_writer.writerow(landmarks)
+else:
+    # If the file exists, let's count the rows to give you peace of mind!
+    with open(CSV_FILE, 'r') as f:
+        row_count = sum(1 for row in f) - 1 # Subtract 1 so we don't count the header row
+    print(f"[*] Found existing dataset '{CSV_FILE}'.")
+    print(f"[*] Currently contains {row_count} saved frames. Appending new data to the bottom!")
 
 # --- 2. INITIAL STATE ---
 cap = cv2.VideoCapture(0)
