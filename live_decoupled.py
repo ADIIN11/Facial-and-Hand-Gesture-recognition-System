@@ -13,20 +13,24 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # --- CONFIGURATION ---
 CSV_FILE = 'multi_target_data.csv'
 
-# --- 1. LOAD BOTH AI BRAINS ---
-print("Loading independent AI Brains...")
+# --- 1. LOAD 3 INDEPENDENT AI BRAINS ---
+print("Loading 3 independent AI Brains...")
 try:
     with open('gesture_brain.pkl', 'rb') as f:
         gesture_model = pickle.load(f)
     with open('expression_brain.pkl', 'rb') as f:
         expression_model = pickle.load(f)
+    with open('identity_brain.pkl', 'rb') as f:
+        identity_model = pickle.load(f)
 except FileNotFoundError:
-    print("Error: Could not find the .pkl files. Run train_decoupled.py first!")
+    print("Error: Could not find all .pkl files. Ensure you trained all 3 brains!")
     exit()
 
+# Setup column structures to match the trainers
 face_cols = [f'{axis}{i}' for i in range(34, 502) for axis in ('x', 'y', 'z', 'v')]
 gesture_cols = [f'{axis}{i}' for i in range(1, 34) for axis in ('x', 'y', 'z', 'v')] + \
                [f'{axis}{i}' for i in range(502, 544) for axis in ('x', 'y', 'z', 'v')]
+id_cols = [f'{axis}{i}' for i in range(1, 469) for axis in ('x', 'y', 'z', 'v')]
 
 # --- 2. INITIALIZE MEDIAPIPE & CAMERA ---
 mp_holistic = mp.solutions.holistic
@@ -37,24 +41,29 @@ cap = cv2.VideoCapture(cam_index)
 
 # State Variables
 show_landmarks = True
+show_face_box = True  # NEW: Toggle for the face bounding box
 full_row = [] 
 
-# Smoothing Buffers (Remembers the last 5 frames)
+# Smoothing Buffers
 gest_buffer = deque(maxlen=5)
 expr_buffer = deque(maxlen=5)
+id_buffer = deque(maxlen=5)
+
 smooth_gest = "none"
 smooth_expr = "neutral"
+smooth_id = "unknown"
 prob_gest = 0.0
 prob_expr = 0.0
 
 print("\n========================================")
-print(" LIVE INFERENCE WITH FEEDBACK & SMOOTHING")
+print(" TRI-CORE INFERENCE WITH FEEDBACK LOOP")
 print("========================================")
 print(" CONTROLS (Click the video window first):")
 print("  [t] - Toggle Skeletons On/Off")
+print("  [b] - Toggle Face Box On/Off")
 print("  [c] - Switch Camera")
 print("  [y] - REWARD (Correct! Save 10 frames)")
-print("  [w] - PENALIZE (Wrong! Override with 20 frames)")
+print("  [w] - PENALIZE (Wrong! Override with 30 frames)")
 print("  [q] - Quit")
 print("========================================\n")
 
@@ -69,6 +78,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = holistic.process(image)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        h, w, _ = image.shape # Get video dimensions for the bounding box
 
         # --- 3. KEYBOARD CONTROLS ---
         key = cv2.waitKey(1) & 0xFF
@@ -77,13 +87,14 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             break
         elif key == ord('t'):
             show_landmarks = not show_landmarks
+        elif key == ord('b'):
+            show_face_box = not show_face_box # Toggle the bounding box
             
         # CAMERA SWITCH LOGIC
         elif key == ord('c'):
             cap.release()
             cam_index += 1
             cap = cv2.VideoCapture(cam_index)
-            # If the next camera index doesn't exist, loop back to 0
             if not cap.isOpened():
                 print(f"Camera index {cam_index} not found. Looping back to default camera (0).")
                 cam_index = 0
@@ -91,7 +102,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             else:
                 print(f"Switched to Camera Index: {cam_index}")
         
-        # REWARD LOGIC (Correct Prediction - Saves 10 frames)
+        # REWARD LOGIC (For Gesture and Expression)
         elif key == ord('y') and len(full_row) > 0:
             row_to_save = [smooth_gest, smooth_expr] + full_row
             with open(CSV_FILE, mode='a', newline='') as f:
@@ -100,7 +111,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
                     writer.writerow(row_to_save)
             print(f"[REWARD] Saved 10 frames as: {smooth_gest} / {smooth_expr}")
 
-        # PENALIZE LOGIC (Wrong Prediction - Saves 20 frames)
+        # PENALIZE LOGIC (For Gesture and Expression)
         elif key == ord('w') and len(full_row) > 0:
             print("\n[PENALIZE] Paused. Look at the terminal!")
             correct_gest = input(f"AI guessed Gesture '{smooth_gest}'. Correct it (or press Enter for 'none'): ")
@@ -113,13 +124,13 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             
             with open(CSV_FILE, mode='a', newline='') as f:
                 writer = csv.writer(f)
-                for _ in range(20):
+                for _ in range(30):
                     writer.writerow(row_to_save)
                     
-            print(f"[CORRECTED] BOOSTER APPLIED! Saved 20 frames as: {final_gest} / {final_expr}.")
+            print(f"[CORRECTED] BOOSTER APPLIED! Saved 30 frames as: {final_gest} / {final_expr}.")
             print("Click back on video window to resume!")
 
-        # --- 4. DRAW LANDMARKS ---
+        # --- 4. DRAW SKELETONS ---
         if show_landmarks:
             if results.face_landmarks:
                 mp_drawing.draw_landmarks(image, results.face_landmarks, mp_holistic.FACEMESH_CONTOURS,
@@ -131,7 +142,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             if results.pose_landmarks:
                 mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
 
-        # --- 5. DECOUPLED PREDICTION LOGIC ---
+        # --- 5. TRI-CORE PREDICTION LOGIC ---
         try:
             pose = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.pose_landmarks.landmark]).flatten()) if results.pose_landmarks else list(np.zeros(33*4))
             face = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.face_landmarks.landmark]).flatten()) if results.face_landmarks else list(np.zeros(468*4))
@@ -140,46 +151,80 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
 
             full_row = pose + face + lh + rh
             gesture_row = pose + lh + rh
-            face_row = face
             
+            # Create DataFrames for prediction
             X_gesture = pd.DataFrame([gesture_row], columns=gesture_cols)
-            X_face = pd.DataFrame([face_row], columns=face_cols)
+            X_face = pd.DataFrame([face], columns=face_cols)
+            X_id = pd.DataFrame([face], columns=id_cols) # Identity uses the exact same face coordinates
 
-            # Raw Predictions
+            # Gesture & Expression Predictions
             raw_gest = gesture_model.predict(X_gesture)[0]
             prob_gest = round(np.max(gesture_model.predict_proba(X_gesture)) * 100, 1)
             
             raw_expr = expression_model.predict(X_face)[0]
             prob_expr = round(np.max(expression_model.predict_proba(X_face)) * 100, 1)
 
-            # Apply Smoothing Filter (Majority Vote)
+            # Identity Prediction & Threshold Logic
+            id_probs = identity_model.predict_proba(X_id)[0]
+            max_id_prob = np.max(id_probs)
+            
+            # If AI is less than 70% sure of the face, label as Unknown
+            if max_id_prob < 0.70:
+                raw_id = "Unknown"
+            else:
+                raw_id = identity_model.predict(X_id)[0]
+
+            # Apply Smoothing Filter
             gest_buffer.append(raw_gest)
             expr_buffer.append(raw_expr)
+            id_buffer.append(raw_id)
             
             smooth_gest = Counter(gest_buffer).most_common(1)[0][0]
             smooth_expr = Counter(expr_buffer).most_common(1)[0][0]
+            smooth_id = Counter(id_buffer).most_common(1)[0][0]
 
-            # --- 6. DISPLAY RESULTS ---
-            cv2.rectangle(image, (0, 0), (640, 80), (30, 30, 30), -1)
+            # --- 6. DRAW FACE BOUNDING BOX ---
+            if show_face_box and results.face_landmarks:
+                # Find the min and max coordinates to draw a box around the face
+                x_max, y_max = 0, 0
+                x_min, y_min = w, h
+                
+                for lm in results.face_landmarks.landmark:
+                    x, y = int(lm.x * w), int(lm.y * h)
+                    if x > x_max: x_max = x
+                    if x < x_min: x_min = x
+                    if y > y_max: y_max = y
+                    if y < y_min: y_min = y
+                
+                # Draw the rectangle with a slight padding
+                cv2.rectangle(image, (x_min - 15, y_min - 40), (x_max + 15, y_max + 15), (255, 100, 100), 2)
+                
+                # Display Identity name right above the bounding box
+                cv2.putText(image, smooth_id.upper(), (x_min - 10, y_min - 15), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 100), 2)
+
+            # --- 7. DISPLAY TOP PANEL RESULTS ---
+            cv2.rectangle(image, (0, 0), (640, 115), (30, 30, 30), -1)
             
-            # Display the SMOOTHED predictions
+            cv2.putText(image, f"PERSON:  {smooth_id.upper()}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 100, 100), 2)
             cv2.putText(image, f"GESTURE: {smooth_gest.upper()} ({prob_gest}%)", 
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.putText(image, f"FACE:    {smooth_expr.upper()} ({prob_expr}%)", 
-                        (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                        (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         except Exception as e:
-            # If no one is in frame, clear the buffers
             full_row = []
             gest_buffer.clear()
             expr_buffer.clear()
+            id_buffer.clear()
             pass
             
-        # Show Toggle & Camera Info
-        toggle_text = "Skeletons: ON ('t' to hide) | 'c' to switch camera" if show_landmarks else "Skeletons: OFF ('t' to show) | 'c' to switch camera"
-        cv2.putText(image, toggle_text, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        # Show Toggle Controls Info at the bottom
+        controls_text = "'t': Skeletons | 'b': Face Box | 'c': Switch Cam"
+        cv2.putText(image, controls_text, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-        cv2.imshow('Decoupled AI with Feedback Loop', image)
+        cv2.imshow('Tri-Core AI Engine', image)
 
 cap.release()
 cv2.destroyAllWindows()
