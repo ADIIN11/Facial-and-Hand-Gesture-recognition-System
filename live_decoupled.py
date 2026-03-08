@@ -6,6 +6,7 @@ import pickle
 import warnings
 import csv
 import os
+from collections import Counter, deque
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -27,31 +28,42 @@ face_cols = [f'{axis}{i}' for i in range(34, 502) for axis in ('x', 'y', 'z', 'v
 gesture_cols = [f'{axis}{i}' for i in range(1, 34) for axis in ('x', 'y', 'z', 'v')] + \
                [f'{axis}{i}' for i in range(502, 544) for axis in ('x', 'y', 'z', 'v')]
 
-# --- 2. INITIALIZE MEDIAPIPE ---
+# --- 2. INITIALIZE MEDIAPIPE & CAMERA ---
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
-cap = cv2.VideoCapture(0)
+
+cam_index = 0
+cap = cv2.VideoCapture(cam_index)
 
 # State Variables
 show_landmarks = True
-pred_gest = "None"
-pred_expr = "None"
-full_row = [] # Will hold the 543 coordinates for the feedback loop
+full_row = [] 
+
+# Smoothing Buffers (Remembers the last 5 frames)
+gest_buffer = deque(maxlen=5)
+expr_buffer = deque(maxlen=5)
+smooth_gest = "none"
+smooth_expr = "neutral"
+prob_gest = 0.0
+prob_expr = 0.0
 
 print("\n========================================")
-print(" LIVE INFERENCE WITH FEEDBACK LOOP")
+print(" LIVE INFERENCE WITH FEEDBACK & SMOOTHING")
 print("========================================")
 print(" CONTROLS (Click the video window first):")
 print("  [t] - Toggle Skeletons On/Off")
-print("  [y] - REWARD (Correct! Save to dataset)")
-print("  [w] - PENALIZE (Wrong! Enter correction)")
+print("  [c] - Switch Camera")
+print("  [y] - REWARD (Correct! Save 10 frames)")
+print("  [w] - PENALIZE (Wrong! Override with 20 frames)")
 print("  [q] - Quit")
 print("========================================\n")
 
 with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
     while cap.isOpened():
         success, frame = cap.read()
-        if not success: break
+        if not success: 
+            print("Failed to grab frame. Exiting...")
+            break
 
         frame = cv2.flip(frame, 1)
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -64,31 +76,50 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
         if key == ord('q'):
             break
         elif key == ord('t'):
-            show_landmarks = not show_landmarks # Toggle boolean
+            show_landmarks = not show_landmarks
+            
+        # CAMERA SWITCH LOGIC
+        elif key == ord('c'):
+            cap.release()
+            cam_index += 1
+            cap = cv2.VideoCapture(cam_index)
+            # If the next camera index doesn't exist, loop back to 0
+            if not cap.isOpened():
+                print(f"Camera index {cam_index} not found. Looping back to default camera (0).")
+                cam_index = 0
+                cap = cv2.VideoCapture(cam_index)
+            else:
+                print(f"Switched to Camera Index: {cam_index}")
         
-        # REWARD LOGIC (Correct Prediction)
+        # REWARD LOGIC (Correct Prediction - Saves 10 frames)
         elif key == ord('y') and len(full_row) > 0:
-            row_to_save = [pred_gest, pred_expr] + full_row
+            row_to_save = [smooth_gest, smooth_expr] + full_row
             with open(CSV_FILE, mode='a', newline='') as f:
-                csv.writer(f).writerow(row_to_save)
-            print(f"[REWARD] Saved frame as: {pred_gest} / {pred_expr}")
+                writer = csv.writer(f)
+                for _ in range(10):
+                    writer.writerow(row_to_save)
+            print(f"[REWARD] Saved 10 frames as: {smooth_gest} / {smooth_expr}")
 
-        # PENALIZE LOGIC (Wrong Prediction)
+        # PENALIZE LOGIC (Wrong Prediction - Saves 20 frames)
         elif key == ord('w') and len(full_row) > 0:
             print("\n[PENALIZE] Paused. Look at the terminal!")
-            correct_gest = input(f"AI guessed Gesture '{pred_gest}'. What is it REALLY? (or press Enter to keep): ")
-            correct_expr = input(f"AI guessed Face '{pred_expr}'. What is it REALLY? (or press Enter to keep): ")
+            correct_gest = input(f"AI guessed Gesture '{smooth_gest}'. Correct it (or press Enter for 'none'): ")
+            correct_expr = input(f"AI guessed Face '{smooth_expr}'. Correct it (or press Enter for 'neutral'): ")
             
-            # If you just hit Enter, it keeps the original prediction
-            final_gest = correct_gest if correct_gest != "" else pred_gest
-            final_expr = correct_expr if correct_expr != "" else pred_expr
+            final_gest = correct_gest.strip() if correct_gest.strip() != "" else "none"
+            final_expr = correct_expr.strip() if correct_expr.strip() != "" else "neutral"
             
             row_to_save = [final_gest, final_expr] + full_row
+            
             with open(CSV_FILE, mode='a', newline='') as f:
-                csv.writer(f).writerow(row_to_save)
-            print(f"[CORRECTED] Saved frame as: {final_gest} / {final_expr}. Click back on video to resume!")
+                writer = csv.writer(f)
+                for _ in range(20):
+                    writer.writerow(row_to_save)
+                    
+            print(f"[CORRECTED] BOOSTER APPLIED! Saved 20 frames as: {final_gest} / {final_expr}.")
+            print("Click back on video window to resume!")
 
-        # --- 4. DRAW LANDMARKS (Based on Toggle) ---
+        # --- 4. DRAW LANDMARKS ---
         if show_landmarks:
             if results.face_landmarks:
                 mp_drawing.draw_landmarks(image, results.face_landmarks, mp_holistic.FACEMESH_CONTOURS,
@@ -107,37 +138,46 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             lh = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.left_hand_landmarks.landmark]).flatten()) if results.left_hand_landmarks else list(np.zeros(21*4))
             rh = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.right_hand_landmarks.landmark]).flatten()) if results.right_hand_landmarks else list(np.zeros(21*4))
 
-            # Save the full row so it can be used by the Reward/Penalize keys on the next loop
             full_row = pose + face + lh + rh
-
-            # Split for prediction
             gesture_row = pose + lh + rh
             face_row = face
             
             X_gesture = pd.DataFrame([gesture_row], columns=gesture_cols)
             X_face = pd.DataFrame([face_row], columns=face_cols)
 
-            # Predict
-            pred_gest = gesture_model.predict(X_gesture)[0]
+            # Raw Predictions
+            raw_gest = gesture_model.predict(X_gesture)[0]
             prob_gest = round(np.max(gesture_model.predict_proba(X_gesture)) * 100, 1)
             
-            pred_expr = expression_model.predict(X_face)[0]
+            raw_expr = expression_model.predict(X_face)[0]
             prob_expr = round(np.max(expression_model.predict_proba(X_face)) * 100, 1)
+
+            # Apply Smoothing Filter (Majority Vote)
+            gest_buffer.append(raw_gest)
+            expr_buffer.append(raw_expr)
+            
+            smooth_gest = Counter(gest_buffer).most_common(1)[0][0]
+            smooth_expr = Counter(expr_buffer).most_common(1)[0][0]
 
             # --- 6. DISPLAY RESULTS ---
             cv2.rectangle(image, (0, 0), (640, 80), (30, 30, 30), -1)
-            cv2.putText(image, f"GESTURE: {pred_gest.upper()} ({prob_gest}%)", 
+            
+            # Display the SMOOTHED predictions
+            cv2.putText(image, f"GESTURE: {smooth_gest.upper()} ({prob_gest}%)", 
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(image, f"FACE:    {pred_expr.upper()} ({prob_expr}%)", 
+            cv2.putText(image, f"FACE:    {smooth_expr.upper()} ({prob_expr}%)", 
                         (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-            # Show Toggle Status
-            toggle_text = "Skeletons: ON (Press 't' to hide)" if show_landmarks else "Skeletons: OFF (Press 't' to show)"
-            cv2.putText(image, toggle_text, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
         except Exception as e:
-            full_row = [] # Clear buffer if nobody is in frame
+            # If no one is in frame, clear the buffers
+            full_row = []
+            gest_buffer.clear()
+            expr_buffer.clear()
             pass
+            
+        # Show Toggle & Camera Info
+        toggle_text = "Skeletons: ON ('t' to hide) | 'c' to switch camera" if show_landmarks else "Skeletons: OFF ('t' to show) | 'c' to switch camera"
+        cv2.putText(image, toggle_text, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         cv2.imshow('Decoupled AI with Feedback Loop', image)
 

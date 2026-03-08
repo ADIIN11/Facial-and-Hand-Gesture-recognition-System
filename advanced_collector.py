@@ -14,7 +14,6 @@ CSV_FILE = 'multi_target_data.csv'
 # --- 1. SETUP DUAL-HEADER CSV ---
 if not os.path.exists(CSV_FILE):
     print(f"[*] Creating new dataset file: {CSV_FILE}")
-    # Notice we now have TWO label columns at the start
     landmarks = ['gesture_class', 'expression_class']
     for val in range(1, 543 + 1):
         landmarks += [f'x{val}', f'y{val}', f'z{val}', f'v{val}']
@@ -23,17 +22,16 @@ if not os.path.exists(CSV_FILE):
         csv_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
         csv_writer.writerow(landmarks)
 else:
-    # If the file exists, let's count the rows to give you peace of mind!
     with open(CSV_FILE, 'r') as f:
-        row_count = sum(1 for row in f) - 1 # Subtract 1 so we don't count the header row
+        row_count = sum(1 for row in f) - 1 
     print(f"[*] Found existing dataset '{CSV_FILE}'.")
     print(f"[*] Currently contains {row_count} saved frames. Appending new data to the bottom!")
 
 # --- 2. INITIAL STATE ---
 cap = cv2.VideoCapture(0)
 is_recording = False
-gesture_name = "None"
-expression_name = "None"
+gesture_name = "none"
+expression_name = "neutral"
 frame_count = 0
 
 print("========================================")
@@ -72,19 +70,24 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
         if key == ord('q'):
             break
         elif key == ord('r'):
-            # Prevent recording if no labels are set
-            if gesture_name == "None" and expression_name == "None":
-                print("WARNING: Press 'n' to set your labels before recording!")
-            else:
-                is_recording = not is_recording
+            if gesture_name == "none" and expression_name == "neutral":
+                print("WARNING: You are recording baseline data (none / neutral)!")
+            is_recording = not is_recording
+        
+        # --- THE UPDATED LABEL LOGIC ---
         elif key == ord('n'):
-            is_recording = False # Always pause recording when typing
+            is_recording = False 
             print("\n--- ENTER NEW LABELS ---")
-            # We use the terminal to get input. 
-            gesture_name = input("Enter Hand Gesture (e.g., Peace, Fist, None): ")
-            expression_name = input("Enter Face Expression (e.g., Smile, Angry, Neutral): ")
-            frame_count = 0 # Reset frame counter for the new batch
-            print(f"\n=> Ready! Click back on the video window and press 'r' to record.")
+            
+            raw_gest = input("Enter Hand Gesture (or press Enter for 'none'): ")
+            raw_expr = input("Enter Face Expression (or press Enter for 'neutral'): ")
+            
+            # Apply defaults if input is blank
+            gesture_name = raw_gest.strip() if raw_gest.strip() != "" else "none"
+            expression_name = raw_expr.strip() if raw_expr.strip() != "" else "neutral"
+            
+            frame_count = 0 
+            print(f"\n=> Ready! Set to: [{gesture_name} / {expression_name}]. Click back on video window and press 'r' to record.")
 
         # --- 4. DATA LOGGING ---
         if is_recording:
@@ -94,10 +97,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
                 lh = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.left_hand_landmarks.landmark]).flatten()) if results.left_hand_landmarks else list(np.zeros(21*4))
                 rh = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.right_hand_landmarks.landmark]).flatten()) if results.right_hand_landmarks else list(np.zeros(21*4))
 
-                # Combine all rows
                 row = pose + face + lh + rh
-                
-                # Insert BOTH labels at the start of the row
                 row.insert(0, expression_name)
                 row.insert(0, gesture_name)
 
@@ -107,14 +107,12 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
                 
                 frame_count += 1
                 
-                # Visual feedback for recording
                 cv2.rectangle(image, (0,0), (640, 40), (0, 0, 255), -1)
                 cv2.putText(image, f"REC | Gest: {gesture_name} | Expr: {expression_name} | Frames: {frame_count}", 
                             (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             except Exception as e:
                 pass 
         else:
-            # Visual feedback for paused state
             cv2.rectangle(image, (0,0), (640, 40), (255, 0, 0), -1)
             cv2.putText(image, f"PAUSED | Gest: {gesture_name} | Expr: {expression_name} | Press 'n' to change", 
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
