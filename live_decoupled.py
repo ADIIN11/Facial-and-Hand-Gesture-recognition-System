@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- CONFIGURATION ---
 CSV_FILE = 'multi_target_data.csv'
+ID_CSV_FILE = 'identity_data.csv'
 
 # --- 1. LOAD 3 INDEPENDENT AI BRAINS ---
 print("Loading 3 independent AI Brains...")
@@ -41,10 +42,11 @@ cap = cv2.VideoCapture(cam_index)
 
 # State Variables
 show_landmarks = True
-show_face_box = True  # NEW: Toggle for the face bounding box
+show_face_box = True  
 full_row = [] 
+current_face_row = [] 
 
-# Smoothing Buffers
+# Smoothing & Locking Buffers
 gest_buffer = deque(maxlen=5)
 expr_buffer = deque(maxlen=5)
 id_buffer = deque(maxlen=5)
@@ -52,8 +54,22 @@ id_buffer = deque(maxlen=5)
 smooth_gest = "none"
 smooth_expr = "neutral"
 smooth_id = "unknown"
+locked_id = None 
 prob_gest = 0.0
 prob_expr = 0.0
+
+# --- MOUSE CALLBACK VARIABLES & FUNCTION ---
+trigger_gest_reward = False
+trigger_gest_penalize = False
+
+def mouse_click(event, x, y, flags, param):
+    global trigger_gest_reward, trigger_gest_penalize
+    if event ==  cv2.EVENT_RBUTTONDOWN:
+        trigger_gest_penalize = True
+
+# Setup window and attach mouse callback
+cv2.namedWindow('Tri-Core AI Engine')
+cv2.setMouseCallback('Tri-Core AI Engine', mouse_click)
 
 print("\n========================================")
 print(" TRI-CORE INFERENCE WITH FEEDBACK LOOP")
@@ -62,8 +78,10 @@ print(" CONTROLS (Click the video window first):")
 print("  [t] - Toggle Skeletons On/Off")
 print("  [b] - Toggle Face Box On/Off")
 print("  [c] - Switch Camera")
-print("  [y] - REWARD (Correct! Save 10 frames)")
-print("  [w] - PENALIZE (Wrong! Override with 30 frames)")
+print("  [y] or [L-Click] - REWARD GEST/EXPR (Save 20 frames)")
+print("  [w] or [R-Click] - PENALIZE GEST/EXPR (Override with 50 frames)")
+print("  [u] - REWARD IDENTITY (Save 40 frames)")
+print("  [i] - PENALIZE IDENTITY (Override with 100 frames)")
 print("  [q] - Quit")
 print("========================================\n")
 
@@ -78,9 +96,9 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = holistic.process(image)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        h, w, _ = image.shape # Get video dimensions for the bounding box
+        h, w, _ = image.shape
 
-        # --- 3. KEYBOARD CONTROLS ---
+        # --- 3. KEYBOARD & MOUSE CONTROLS ---
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord('q'):
@@ -88,7 +106,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
         elif key == ord('t'):
             show_landmarks = not show_landmarks
         elif key == ord('b'):
-            show_face_box = not show_face_box # Toggle the bounding box
+            show_face_box = not show_face_box 
             
         # CAMERA SWITCH LOGIC
         elif key == ord('c'):
@@ -102,17 +120,17 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             else:
                 print(f"Switched to Camera Index: {cam_index}")
         
-        # REWARD LOGIC (For Gesture and Expression)
-        elif key == ord('y') and len(full_row) > 0:
+        # --- REWARD/PENALIZE (Gesture & Expression) ---
+        elif (key == ord('y') or trigger_gest_reward) and len(full_row) > 0:
             row_to_save = [smooth_gest, smooth_expr] + full_row
             with open(CSV_FILE, mode='a', newline='') as f:
                 writer = csv.writer(f)
-                for _ in range(10):
+                for _ in range(20): # CHANGED TO 20
                     writer.writerow(row_to_save)
-            print(f"[REWARD] Saved 10 frames as: {smooth_gest} / {smooth_expr}")
+            print(f"[REWARD] Saved 20 frames as: {smooth_gest} / {smooth_expr}")
+            trigger_gest_reward = False # Reset flag
 
-        # PENALIZE LOGIC (For Gesture and Expression)
-        elif key == ord('w') and len(full_row) > 0:
+        elif (key == ord('w') or trigger_gest_penalize) and len(full_row) > 0:
             print("\n[PENALIZE] Paused. Look at the terminal!")
             correct_gest = input(f"AI guessed Gesture '{smooth_gest}'. Correct it (or press Enter for 'none'): ")
             correct_expr = input(f"AI guessed Face '{smooth_expr}'. Correct it (or press Enter for 'neutral'): ")
@@ -124,10 +142,42 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             
             with open(CSV_FILE, mode='a', newline='') as f:
                 writer = csv.writer(f)
-                for _ in range(30):
+                for _ in range(50): # CHANGED TO 50
                     writer.writerow(row_to_save)
                     
-            print(f"[CORRECTED] BOOSTER APPLIED! Saved 30 frames as: {final_gest} / {final_expr}.")
+            print(f"[CORRECTED] BOOSTER APPLIED! Saved 50 frames as: {final_gest} / {final_expr}.")
+            print("Click back on video window to resume!")
+            trigger_gest_penalize = False # Reset flag
+
+        # Reset flags if triggered while tracking was lost (prevents delayed triggers)
+        trigger_gest_reward = False
+        trigger_gest_penalize = False
+
+        # --- REWARD/PENALIZE (Identity) ---
+        if key == ord('u') and len(current_face_row) > 0:
+            save_id = locked_id if locked_id else smooth_id
+            row_to_save = [save_id] + current_face_row
+            with open(ID_CSV_FILE, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                for _ in range(40):
+                    writer.writerow(row_to_save)
+            print(f"[ID REWARD] Saved 40 frames for Identity: {save_id}")
+
+        elif key == ord('i') and len(current_face_row) > 0:
+            print("\n[ID PENALIZE] Paused. Look at the terminal!")
+            current_guess = locked_id if locked_id else smooth_id
+            correct_id = input(f"AI guessed Identity '{current_guess}'. Correct it: ")
+            
+            final_id = correct_id.strip() if correct_id.strip() != "" else "unknown"
+            
+            row_to_save = [final_id] + current_face_row
+            with open(ID_CSV_FILE, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                for _ in range(100):
+                    writer.writerow(row_to_save)
+                    
+            print(f"[ID CORRECTED] BOOSTER APPLIED! Saved 100 frames as: {final_id}.")
+            locked_id = final_id 
             print("Click back on video window to resume!")
 
         # --- 4. DRAW SKELETONS ---
@@ -144,6 +194,10 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
 
         # --- 5. TRI-CORE PREDICTION LOGIC ---
         try:
+            if not results.face_landmarks:
+                locked_id = None
+                id_buffer.clear()
+            
             pose = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.pose_landmarks.landmark]).flatten()) if results.pose_landmarks else list(np.zeros(33*4))
             face = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.face_landmarks.landmark]).flatten()) if results.face_landmarks else list(np.zeros(468*4))
             lh = list(np.array([[p.x, p.y, p.z, p.visibility] for p in results.left_hand_landmarks.landmark]).flatten()) if results.left_hand_landmarks else list(np.zeros(21*4))
@@ -151,11 +205,11 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
 
             full_row = pose + face + lh + rh
             gesture_row = pose + lh + rh
+            current_face_row = face 
             
-            # Create DataFrames for prediction
             X_gesture = pd.DataFrame([gesture_row], columns=gesture_cols)
             X_face = pd.DataFrame([face], columns=face_cols)
-            X_id = pd.DataFrame([face], columns=id_cols) # Identity uses the exact same face coordinates
+            X_id = pd.DataFrame([face], columns=id_cols) 
 
             # Gesture & Expression Predictions
             raw_gest = gesture_model.predict(X_gesture)[0]
@@ -164,28 +218,34 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             raw_expr = expression_model.predict(X_face)[0]
             prob_expr = round(np.max(expression_model.predict_proba(X_face)) * 100, 1)
 
-            # Identity Prediction & Threshold Logic
-            id_probs = identity_model.predict_proba(X_id)[0]
-            max_id_prob = np.max(id_probs)
-            
-            # If AI is less than 70% sure of the face, label as Unknown
-            if max_id_prob < 0.70:
-                raw_id = "Unknown"
-            else:
-                raw_id = identity_model.predict(X_id)[0]
-
-            # Apply Smoothing Filter
             gest_buffer.append(raw_gest)
             expr_buffer.append(raw_expr)
-            id_buffer.append(raw_id)
-            
             smooth_gest = Counter(gest_buffer).most_common(1)[0][0]
             smooth_expr = Counter(expr_buffer).most_common(1)[0][0]
-            smooth_id = Counter(id_buffer).most_common(1)[0][0]
+
+            # Identity Prediction Logic
+            if results.face_landmarks:
+                if locked_id is None:
+                    id_probs = identity_model.predict_proba(X_id)[0]
+                    max_id_prob = np.max(id_probs)
+                    
+                    if max_id_prob < 0.70:
+                        raw_id = "Unknown"
+                    else:
+                        raw_id = identity_model.predict(X_id)[0]
+                    
+                    id_buffer.append(raw_id)
+                    smooth_id = Counter(id_buffer).most_common(1)[0][0]
+                    
+                    if smooth_id != "Unknown" and len(id_buffer) == 5:
+                        locked_id = smooth_id
+                else:
+                    smooth_id = locked_id
+            else:
+                smooth_id = "Unknown"
 
             # --- 6. DRAW FACE BOUNDING BOX ---
             if show_face_box and results.face_landmarks:
-                # Find the min and max coordinates to draw a box around the face
                 x_max, y_max = 0, 0
                 x_min, y_min = w, h
                 
@@ -196,10 +256,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
                     if y > y_max: y_max = y
                     if y < y_min: y_min = y
                 
-                # Draw the rectangle with a slight padding
                 cv2.rectangle(image, (x_min - 15, y_min - 40), (x_max + 15, y_max + 15), (255, 100, 100), 2)
-                
-                # Display Identity name right above the bounding box
                 cv2.putText(image, smooth_id.upper(), (x_min - 10, y_min - 15), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 100), 2)
 
@@ -215,13 +272,15 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
 
         except Exception as e:
             full_row = []
+            current_face_row = []
             gest_buffer.clear()
             expr_buffer.clear()
             id_buffer.clear()
+            locked_id = None
             pass
             
         # Show Toggle Controls Info at the bottom
-        controls_text = "'t': Skeletons | 'b': Face Box | 'c': Switch Cam"
+        controls_text = "'r'/R-Click: Gest. Feedbk | 'u'/'i': ID Feedbk"
         cv2.putText(image, controls_text, (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         cv2.imshow('Tri-Core AI Engine', image)
