@@ -23,14 +23,19 @@ Built with a **"Human-in-the-Loop"** philosophy, this system allows you to act a
 It is highly recommended to use an isolated environment.
 ```bash
 python -m venv myenv
+```
 
 # Activate on Windows:
+```bash
 myenv\Scripts\activate
+```
 # Activate on Mac/Linux:
+```bash
 source myenv/bin/activate
+```
 2. Install Dependencies
 Create a requirements.txt file in your directory and paste the following:
-
+```bash
 Plaintext
 pandas
 scikit-learn
@@ -40,28 +45,31 @@ opencv-python<4.10
 opencv-contrib-python<4.10
 tensorflow==2.15.0
 keras-facenet
+```
+
 Then, run:
 
-Bash
+```Bash
 pip install -r requirements.txt
 🚀 The 3-Step Workflow
 To get the system running, follow these steps in order:
+```
 
 Step 1: Record Data
-Bash
+```bash
 python advanced_collector.py
 Map your skeletal coordinates to specific labels. This generates your multi_target_data.csv.
-
+```
 Step 2: Train the Brains
-Bash
+```bash
 python train_dual_brain.py
 This script cleans the data and trains your Random Forest models, outputting gesture_brain.pkl and expression_brain.pkl.
-
+```
 Step 3: Launch Live Engine
-Bash
+```bash
 python live_ultimate_tri_core.py
 This starts the production feed with the UI overlays and analytics panel.
-
+```
 🎮 Live Engine Controls
 General UI:
 
@@ -97,6 +105,3 @@ facenet_database.pkl - Persistent database for recognized identities.
 Tri-Core RSAR System © 2026
 
 
-
-
-Would you like me to also provide the `requirements.txt` as a separate, downloadable block, or are you a
